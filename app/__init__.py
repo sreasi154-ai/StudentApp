@@ -19,24 +19,32 @@ def create_app():
     configure_logging(app)
     
     with app.app_context():
-        # --- NEW: Database Connection Verification Check ---
+        # CRITICAL: Import your models here so Flask-SQLAlchemy registers them for create_all()
+        from .models import Student, User 
+        
+        # --- Import and Register your API Routes Blueprint ---
+        from .routes import api_bp
+        app.register_blueprint(api_bp)
+        # ---------------------------------------------------------
+        
         try:
             # Send a simple ping query to verify the connection is alive
             db.session.execute(db.text('SELECT 1'))
             app.logger.info("Successfully connected to the MySQL database server.")
             
-            # If connection is successful, proceed with creating tables
-            db.create_all()
-            app.logger.info("MySQL database tables verified/initialized successfully.")
+            # ----------------------------------------------------
+            # --- FIXED: Drop old tables and recreate them fresh ---
+            # ----------------------------------------------------
+            app.logger.info("Dropping outdated tables to fix schema mismatch...")
+            db.drop_all()  # <--- ADDED THIS LINE TEMPORARILY TO WIPE OLD TABLES
+            
+            db.create_all() # This creates them fresh with all correct columns
+            app.logger.info("MySQL database tables updated and initialized successfully.")
             
         except OperationalError as e:
-            # This catches wrong password, wrong host, or stopped server errors
             app.logger.error("CRITICAL: Failed to connect to the MySQL database!")
             app.logger.error(f"Error Details: {e.orig}")
-            # Optional: system exit if you don't want the app to run without a working DB
-            # import sys; sys.exit(1)
         except Exception as e:
-            # Catch-all for any other unexpected database issues
             app.logger.error(f"An unexpected error occurred during database setup: {e}")
         # ----------------------------------------------------
         
