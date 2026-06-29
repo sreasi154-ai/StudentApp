@@ -1,5 +1,5 @@
 from flask import Blueprint, request, jsonify
-from werkzeug.security import generate_password_hash
+from werkzeug.security import generate_password_hash,check_password_hash
 from .models import db, User, Student
 
 # Create a Blueprint for our API routes
@@ -12,52 +12,61 @@ def create_student():
         return jsonify({"error": "Invalid request payload. JSON data required."}), 400
 
     # Extract required fields
-    username = data.get('username')
     password = data.get('password')
     email = data.get('email')
-    first_name = data.get('first_name')
-    last_name = data.get('last_name')
-    contact_number = data.get('contact_number')
+    is_admin=data.get('is_admin',False)
 
-    if not all([username, password, email, first_name, last_name, contact_number]):
-        return jsonify({"error": "Missing mandatory fields: username, password, email, first_name, last_name, contact_number"}), 400
+    if is_admin:
+        if not all([password,email]):
+            return jsonify({"error":"Missing mandatory admin fields:email,password"}),400
+        user_role='admin'
+    else:
+        user_role='student'
+        first_name=data.get('first_name')
+        last_name=data.get('last_name')
+        contact_number=data.get('contact_number')
 
-    # Prevent duplicates
-    if User.query.filter_by(username=username).first():
-        return jsonify({"error": f"Username '{username}' is already taken."}), 409
-    if Student.query.filter_by(email=email).first():
-        return jsonify({"error": f"A student profile with email '{email}' already exists."}), 409
+        if not all([password, email, first_name, last_name, contact_number]):
+            return jsonify({"error": "Missing mandatory fields: password, email, first_name, last_name, contact_number"}), 400
+
+    # Prevent duplicates using modern db.select syntax
+    if db.session.scalar(db.select(User).filter_by(email=email)):
+        return jsonify({"error": f"A user account with email '{email}' already exists."}), 409
+    
 
     try:
         # Step A: Create and Hash the User Account
         hashed_password = generate_password_hash(password, method='scrypt')
         new_user = User(
-            username=username,
+            email=email,
             password_hash=hashed_password,
-            user_type='student',
+            user_type=user_role,
             is_active=True
         )
         db.session.add(new_user)
-        db.session.flush()  # Grabs the new_user.id instantly
+        new_student=None
+
+        if user_role == 'student':
+            db.session.flush()  # Grabs the new_user.id instantly
 
         # Step B: Create Student Profile linked to User Account
-        new_student = Student(
-            user_id=new_user.id,
-            first_name=first_name,
-            last_name=last_name,
-            email=email,
-            contact_number=contact_number,
-            blood_group=data.get('blood_group'),
-            course=data.get('course'),
-            stream=data.get('stream'),
-            guardians_name=data.get('guardians_name'),
-            guardians_contact_number=data.get('guardians_contact_number'),
-            current_address=data.get('current_address'),
-            permanent_address=data.get('permanent_address'),
-            medical_fitness=data.get('medical_fitness'),
-            age=data.get('age')
-        )
-        db.session.add(new_student)
+            new_student = Student(
+                user_id=new_user.id,
+                first_name=first_name,
+                last_name=last_name,
+                email=email,
+                contact_number=contact_number,
+                blood_group=data.get('blood_group'),
+                course=data.get('course'),
+                stream=data.get('stream'),
+                guardians_name=data.get('guardians_name'),
+                guardians_contact_number=data.get('guardians_contact_number'),
+                current_address=data.get('current_address'),
+                permanent_address=data.get('permanent_address'),
+                medical_fitness=data.get('medical_fitness'),
+                age=data.get('age')
+            )
+            db.session.add(new_student)
 
         # Step C: Commit Both cleanly
         db.session.commit()
@@ -65,9 +74,191 @@ def create_student():
         return jsonify({
             "message": "Student registered successfully!",
             "user": new_user.to_dict(),
-            "student": new_student.to_dict()
+            "student": new_student.to_dict() if new_student is not None else None
         }), 201
 
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": f"An internal server error occurred: {str(e)}"}), 500
+    
+
+@api_bp.route('/api/students', methods=['GET'])
+def get_students():
+    # Fallback default values if parameters are missing or incorrect
+    page = request.args.get('page', default=1, type=int)
+    per_page = request.args.get('per_page', default=2, type=int) 
+
+    try:
+        # 1. Build a modern Select statement ordered by creation date or ID 
+        # (This prevents row skipping/shuffling across pages)
+        stmt = db.select(Student).order_by(Student.id.desc())
+        
+        # 2. Use db.paginate instead of legacy Model.query.paginate
+        paginated_data = db.paginate(stmt, page=page, per_page=per_page, error_out=False)
+        
+        # 3. paginated_data.items contains the list of Student objects for this specific page
+        student_list = [s.to_dict() for s in paginated_data.items]
+        
+        return jsonify({
+            "total_students": paginated_data.total,      
+            "current_page": paginated_data.page,         
+            "per_page": paginated_data.per_page,         
+            "total_pages": paginated_data.pages,         
+            "has_next": paginated_data.has_next,         
+            "has_prev": paginated_data.has_prev,         
+            "students": student_list                    
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": f"An internal server error occurred: {str(e)}"}), 500
+    
+
+@api_bp.route('/api/students/<int:student_id>', methods=['GET'])
+def get_student_by_id(student_id):
+    try:
+        # 1. Fetch the student using the modern db.select syntax
+        student = db.session.scalar(db.select(Student).filter_by(user_id=student_id))
+        
+        # 2. CLIENT ERROR: Return 404 if the student doesn't exist
+        if not student:
+            student = db.session.scalar(db.select(Student).filter_by(id=student_id))
+
+        if not student:  
+            return jsonify({"error": f"Student with ID {student_id} not found."}), 404
+            
+        # 3. SUCCESS: Return the single student data
+        return jsonify({
+            "message": "Student record retrieved successfully.",
+            "student": student.to_dict()
+        }), 200
+
+    except Exception as e:
+        # SERVER ERROR: Catch unexpected system or database crashes
+        return jsonify({"error": f"An internal server error occurred: {str(e)}"}), 500
+
+@api_bp.route('/api/students/<int:student_id>', methods=['PUT'])
+def update_student(student_id):
+    try:
+        # 1. Fetch the student profile using modern syntax
+        student = db.session.scalar(db.select(Student).filter_by(id=student_id))
+        
+        # 2. CLIENT ERROR: Return 404 if the student doesn't exist
+        if not student:
+            return jsonify({"error": f"Student with ID {student_id} not found."}), 404
+
+        # 3. Get the incoming JSON data
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid request payload. JSON data required."}), 400
+
+        # 4. Optional: Handle unique constraint checks if email is being updated
+        new_email = data.get('email')
+        if new_email and new_email != student.email:
+            existing_email = db.session.scalar(db.select(Student).filter_by(email=new_email))
+            if existing_email:
+                return jsonify({"error": f"A student profile with email '{new_email}' already exists."}), 409
+
+        # 5. Dynamically update Student fields if they are provided in the JSON body
+        # (Using .get() with the current value as a fallback keeps existing data intact)
+        student.first_name = data.get('first_name', student.first_name)
+        student.last_name = data.get('last_name', student.last_name)
+        student.email = data.get('email', student.email)
+        student.contact_number = data.get('contact_number', student.contact_number)
+        student.blood_group = data.get('blood_group', student.blood_group)
+        student.course = data.get('course', student.course)
+        student.stream = data.get('stream', student.stream)
+        student.guardians_name = data.get('guardians_name', student.guardians_name)
+        student.guardians_contact_number = data.get('guardians_contact_number', student.guardians_contact_number)
+        student.current_address = data.get('current_address', student.current_address)
+        student.permanent_address = data.get('permanent_address', student.permanent_address)
+        student.medical_fitness = data.get('medical_fitness', student.medical_fitness)
+        student.age = data.get('age', student.age)
+
+        # 6. Commit the updates safely
+        db.session.commit()
+        
+        return jsonify({
+            "message": "Student profile updated successfully!",
+            "student": student.to_dict()
+        }), 200
+
+    except Exception as e:
+        # SERVER ERROR: Rollback database updates if something crashes
+        db.session.rollback()
+        return jsonify({"error": f"An internal server error occurred: {str(e)}"}), 500
+
+@api_bp.route('/api/students/<int:student_id>', methods=['DELETE'])
+def delete_student(student_id):
+    try:
+        # 1. Fetch the student profile using modern syntax
+        student = db.session.scalar(db.select(Student).filter_by(id=student_id))
+        
+        # 2. CLIENT ERROR: Return 404 if the student doesn't exist
+        if not student:
+            return jsonify({"error": f"Student with ID {student_id} not found."}), 404
+        
+        user=db.session.scalar(db.select(User).filter_by(id=student.user_id))
+
+        # 3. Delete the student profile (cascades to user account if set up)
+        db.session.delete(student)
+        if user:
+            db.session.delete(user)  
+
+        db.session.commit()
+        return jsonify({"message": f"Student with ID {student_id} and associated user account deleted successfully."}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": f"An internal server error occurred: {str(e)}"}), 500
+           
+
+@api_bp.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid request payload. JSON data required."}), 400
+
+    email = data.get('email')  # Accept 'email' as the login identifier
+    password = data.get('password')
+
+    if not email or not password:
+        return jsonify({"error": "Both 'email' and 'password' fields are required."}), 400
+
+    try:
+
+        user = db.session.scalar(db.select(User).filter_by(email=email))
+        if not user:
+            return jsonify({"error": "Invalid email or password."}), 401
+
+        if not check_password_hash(user.password_hash, password):
+            return jsonify({"error": "Invalid email or password."}), 401
+        
+        if not user.is_active:
+            return jsonify({"error": "This account has been deactivated."}), 403
+
+        # 5. Fetch associated Student profile payload if user type matches
+        student_data = None
+        first_name=""
+        last_name=""
+        if user.user_type == 'student':
+            student = db.session.scalar(db.select(Student).filter_by(user_id=user.id))
+            if student:
+                student_data = student.to_dict()
+                first_name=student.first_name
+                last_name=student.last_name
+
+        user_payload = user.to_dict()
+        user_payload["first_name"] = first_name
+        user_payload["last_name"] = last_name
+
+        # 6. Return standard success response without tokens
+        return jsonify({
+            "message": "Login successful!",
+            "user": user_payload,
+            "student": student_data
+        }), 200
+    
+    except Exception as e:
+        return jsonify({"error": f"An internal server error occurred: {str(e)}"}), 500
+
+
+        

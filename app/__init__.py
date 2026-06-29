@@ -2,6 +2,7 @@ import os
 import logging
 from logging.handlers import RotatingFileHandler
 from flask import Flask
+from flask_cors import CORS
 from .models import db
 from sqlalchemy.exc import OperationalError  # Imported to catch database connection errors
 
@@ -11,6 +12,8 @@ def create_app():
     # 1. Database Configuration for Local MySQL
     app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:MySQL%40123@localhost:3306/student_db'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+    CORS(app)  # Enable CORS for all routes and origins
     
     # Initialize DB
     db.init_app(app)
@@ -36,8 +39,7 @@ def create_app():
             # --- FIXED: Drop old tables and recreate them fresh ---
             # ----------------------------------------------------
             app.logger.info("Dropping outdated tables to fix schema mismatch...")
-            db.drop_all()  # <--- ADDED THIS LINE TEMPORARILY TO WIPE OLD TABLES
-            
+          
             db.create_all() # This creates them fresh with all correct columns
             app.logger.info("MySQL database tables updated and initialized successfully.")
             
