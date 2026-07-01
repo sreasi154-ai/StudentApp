@@ -36,12 +36,12 @@ def create_app():
             app.logger.info("Successfully connected to the MySQL database server.")
             
             # ----------------------------------------------------
-            # --- FIXED: Drop old tables and recreate them fresh ---
+            # --- Initialize Tables ---
             # ----------------------------------------------------
-            app.logger.info("Dropping outdated tables to fix schema mismatch...")
+            app.logger.info("Initializing database tables...")
           
-            db.create_all() # This creates them fresh with all correct columns
-            app.logger.info("MySQL database tables updated and initialized successfully.")
+            db.create_all() # This creates tables if they don't exist
+            app.logger.info("MySQL database tables initialized successfully.")
             
         except OperationalError as e:
             app.logger.error("CRITICAL: Failed to connect to the MySQL database!")
